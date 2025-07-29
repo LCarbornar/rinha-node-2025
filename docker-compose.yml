@@ -1,0 +1,70 @@
+x-api-worker-base: &api-worker-base
+  image: lcarbornar/rinha-node-2025:latest
+  command: npm run start
+  depends_on:
+    - redis
+  networks:
+    - api_network
+    - payment-processor
+  environment:
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+    - PAYMENT_QUEUE_NAME=payments
+    - PROCESSED_PAYMENTS_DEFAULT_KEY=processed:default
+    - PROCESSED_PAYMENTS_FALLBACK_KEY=processed:fallback
+    - DEFAULT_PROCESSOR_URL=http://payment-processor-default:8080
+    - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
+    - DEFAULT_HEALTH_CHECK_KEY=default_api_status
+    - DEFAULT_HEALTH_CHECK_TIMESTAMP_KEY=default_api_last_check
+    - FALLBACK_HEALTH_CHECK_KEY=fallback_api_status
+    - FALLBACK_HEALTH_CHECK_TIMESTAMP_KEY=fallback_api_last_check
+    - HOSTNAME
+    - PORT=5051
+  deploy:
+    resources:
+      limits:
+        cpus: '0.7'
+        memory: '140M'
+
+services:
+  nginx:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "9999:9999"
+    depends_on:
+      - api1
+      - api2
+    networks:
+      - api_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: '35M'
+
+  api1:
+    <<: *api-worker-base
+    container_name: payment-api-worker-1
+
+  api2:
+    <<: *api-worker-base
+    container_name: payment-api-worker-2
+
+  redis:
+    image: redis:8.0.3-alpine
+    networks:
+      - api_network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.1'
+          memory: '35M'
+
+networks:
+  api_network:
+    name: api_network
+    driver: bridge
+  payment-processor:
+    external: true
