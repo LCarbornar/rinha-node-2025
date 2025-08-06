@@ -4,12 +4,15 @@ import { connection } from './services/redis_client.js'
 export const PaymentQueue = new Queue(process.env.PAYMENT_QUEUE_NAME || "payments", {
     connection,
     defaultJobOptions: {
-      attempts: 5, // Tentar 5 vezes antes de falhar de vez
+      attempts: 3, // Reduzido de 3 para 2
       backoff: {
         type: 'exponential',
-        delay: 500, // Esperar 500ms para a primeira retentativa, depois 1s, 2s...
+        delay: 1000, // Aumentado para reduzir tentativas
       },
-      removeOnComplete: true, // Limpa o job da fila ao completar
-      removeOnFail: true, // Limpa o job da fila ao falhar após todas as tentativas
-    },
+      removeOnComplete: true,
+      removeOnFail: true,
+      // Timeout reduzido
+      timeout: 15000, // Reduzido para 15s
+      delay: 0,
+    }
 })

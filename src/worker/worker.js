@@ -2,42 +2,43 @@ import { client as redis } from "../services/redis_client.js"
 import * as Processor from '../services/payment-processor.js'
 
 export default async function processor (job) {
+  console.log(`[Worker] Starting to process job ${job.id}`)
 
   const payment = job.data
-  const transaction_timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, '.000Z')
-  payment.requestedAt = transaction_timestamp
+  const transaction_timestamp = new Date()
+  payment.requestedAt = transaction_timestamp.toISOString()
+  
+  console.log(`[Worker] Processing payment for correlationId: ${payment.correlationId}`)
 
   let processed_by = null
 
   try {
 
-    await ProcessorsHealthCheck()
+    //await ProcessorsHealthCheck()
 
     try {
-
       const default_processor_result = await Processor.ProcessPayment(payment, "default")
 
-      if (default_processor_result.status === 200) {
+      if (default_processor_result.status === 200 || default_processor_result.status === 201) {
         processed_by = "default"
       }
 
     } catch (error) {
-
-      await redis.set(process.env.DEFAULT_HEALTH_CHECK_KEY, "DOWN", "EX", 30)
       console.error(`[Worker] Default processor failed. Error: ${error.message}. Trying fallback.`)
-
     }
     
-
     if (processed_by == null) {
+      try {
+        const fallback_result = await Processor.ProcessPayment(payment, "fallback")
 
-      const fallback_result = await Processor.ProcessPayment(payment, "fallback")
-      if (fallback_result.status === 200) {
-        processed_by = "fallback"
-      } else {
-        throw new Error("Fallback processor also failed")
+        if (fallback_result.status === 200 || fallback_result.status === 201) {
+          processed_by = "fallback"
+        } else {
+          throw new Error(`Fallback processor returned status ${fallback_result.status}`)
+        }
+      } catch (error) {
+        throw new Error(`Both processors failed. Last error: ${error.message}`)
       }
-
     }
 
     const key = processed_by === "default"
@@ -46,7 +47,7 @@ export default async function processor (job) {
 
     await redis.zadd(
       key,
-      transaction_timestamp,
+      transaction_timestamp.getTime(),
       `${payment.correlationId}:${payment.amount}`
     )
 

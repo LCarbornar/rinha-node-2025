@@ -27,6 +27,7 @@ x-api-worker-base: &api-worker-base
         memory: '140M'
 
 services:
+
   nginx:
     image: nginx:1.25-alpine
     volumes:
@@ -46,14 +47,14 @@ services:
 
   api1:
     <<: *api-worker-base
-    container_name: payment-api-worker-1
+    container_name: api1
 
   api2:
     <<: *api-worker-base
-    container_name: payment-api-worker-2
+    container_name: api2
 
   redis:
-    image: redis:8.0.3-alpine
+    image: redis:7-alpine
     networks:
       - api_network
     deploy:
