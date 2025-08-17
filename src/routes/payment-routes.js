@@ -13,17 +13,17 @@ const paymentBodySchema = {
 }
 
 async function PaymentRoutes(fastify, options) {
-  fastify.post(
-    "/payments",
-    { schema: { body: paymentBodySchema } },
-    async (request, reply) => {
-      
+  fastify.post("/payments", async (request, reply) => {
+    // Responder primeiro para minimizar p99 da API
+    reply.status(202).send()
+    // Enfileirar no próximo tick para evitar competir com a resposta
+    setImmediate(() => {
       const paymentData = request.body
-      await PaymentQueue.add("processPayment", { ...paymentData })
-      reply.status(202).send()
-    
-    }
-  )
+      PaymentQueue.add("processPayment", { ...paymentData }).catch((err) => {
+        fastify.log.error({ err }, "Failed to enqueue payment")
+      })
+    })
+  })
 
   fastify.get("/payments-summary", async (request, reply) => {
     

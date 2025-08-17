@@ -7,9 +7,12 @@ const fastify = Fastify({
   logger: false,
   ignoreTrailingSlash: true,
   disableRequestLogging: true,
-  bodyLimit: 1048576, 
+  bodyLimit: 1048576,
   maxParamLength: 100,
-  keepAliveTimeout: 50000
+  keepAliveTimeout: 15000,
+  requestTimeout: 5000,
+  connectionTimeout: 5000,
+  pluginTimeout: 5000
 })
 
 fastify.register(PaymentRoutes)
@@ -17,8 +20,10 @@ fastify.register(PaymentRoutes)
 const Start = async () => {
 
   try {
-    // Inicia o worker e guarda a referência
-    await StartWorker()
+    // Inicialização condicional do worker para permitir separar API/Worker
+    if (process.env.START_WORKER !== 'false') {
+      await StartWorker()
+    }
 
     fastify.listen({ 
       port: process.env.PORT || 5051,

@@ -5,7 +5,9 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "start:api": "cross-env START_WORKER=false node src/index.js",
+    "start:worker": "node src/worker/worker_start.js"
   },
   "repository": {
     "type": "git",
@@ -22,6 +24,7 @@
     "bullmq": "^5.56.5",
     "fastify": "^5.4.0",
     "ioredis": "^5.6.1",
-    "undici": "^7.13.0"
+    "undici": "^7.13.0",
+    "cross-env": "^7.0.3"
   }
 }

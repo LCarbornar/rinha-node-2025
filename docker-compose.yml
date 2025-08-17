@@ -1,30 +1,27 @@
-x-api-worker-base: &api-worker-base
+x-env: &base_env
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  PAYMENT_QUEUE_NAME: "payments"
+  PROCESSED_PAYMENTS_DEFAULT_KEY: "processed:default"
+  PROCESSED_PAYMENTS_FALLBACK_KEY: "processed:fallback"
+  DEFAULT_PROCESSOR_URL: "http://payment-processor-default:8080"
+  FALLBACK_PROCESSOR_URL: "http://payment-processor-fallback:8080"
+  DEFAULT_HEALTH_CHECK_KEY: "default_api_status"
+  DEFAULT_HEALTH_CHECK_TIMESTAMP_KEY: "default_api_last_check"
+  FALLBACK_HEALTH_CHECK_KEY: "fallback_api_status"
+  FALLBACK_HEALTH_CHECK_TIMESTAMP_KEY: "fallback_api_last_check"
+  HOSTNAME: ""
+  PORT: "5051"
+
+x-api-base: &api-base
   image: lcarbornar/rinha-node-2025:latest
-  command: npm run start
   depends_on:
     - redis
   networks:
     - api_network
     - payment-processor
   environment:
-    - REDIS_HOST=redis
-    - REDIS_PORT=6379
-    - PAYMENT_QUEUE_NAME=payments
-    - PROCESSED_PAYMENTS_DEFAULT_KEY=processed:default
-    - PROCESSED_PAYMENTS_FALLBACK_KEY=processed:fallback
-    - DEFAULT_PROCESSOR_URL=http://payment-processor-default:8080
-    - FALLBACK_PROCESSOR_URL=http://payment-processor-fallback:8080
-    - DEFAULT_HEALTH_CHECK_KEY=default_api_status
-    - DEFAULT_HEALTH_CHECK_TIMESTAMP_KEY=default_api_last_check
-    - FALLBACK_HEALTH_CHECK_KEY=fallback_api_status
-    - FALLBACK_HEALTH_CHECK_TIMESTAMP_KEY=fallback_api_last_check
-    - HOSTNAME
-    - PORT=5051
-  deploy:
-    resources:
-      limits:
-        cpus: '0.7'
-        memory: '140M'
+    <<: *base_env
 
 services:
 
@@ -42,26 +39,69 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: '35M'
+          cpus: '0.15'
+          memory: '20M'
 
   api1:
-    <<: *api-worker-base
+    <<: *api-base
     container_name: api1
+    command: npm run start:api
+    environment:
+      <<: *base_env
+      START_WORKER: "false"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.30'
+          memory: '80M'
 
   api2:
-    <<: *api-worker-base
+    <<: *api-base
     container_name: api2
+    command: npm run start:api
+    environment:
+      <<: *base_env
+      START_WORKER: "false"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.30'
+          memory: '80M'
 
   redis:
     image: redis:7-alpine
     networks:
       - api_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     deploy:
       resources:
         limits:
-          cpus: '0.1'
-          memory: '35M'
+          cpus: '0.10'
+          memory: '30M'
+
+  worker:
+    <<: *api-base
+    container_name: worker
+    command: npm run start:worker
+    environment:
+      <<: *base_env
+      WORKER_CONCURRENCY: "120"
+      START_WORKER: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - api_network
+      - payment-processor
+    deploy:
+      resources:
+        limits:
+          cpus: '0.55'
+          memory: '120M'
 
 networks:
   api_network:

@@ -2,43 +2,46 @@ import { client as redis } from "../services/redis_client.js"
 import * as Processor from '../services/payment-processor.js'
 
 export default async function processor (job) {
-  console.log(`[Worker] Starting to process job ${job.id}`)
+  // Logs reduzidos para não bloquear o event loop sob alta concorrência
 
   const payment = job.data
   const transaction_timestamp = new Date()
   payment.requestedAt = transaction_timestamp.toISOString()
   
-  console.log(`[Worker] Processing payment for correlationId: ${payment.correlationId}`)
+  
 
   let processed_by = null
 
   try {
 
-    //await ProcessorsHealthCheck()
+    const health = await ProcessorsHealthCheck()
 
-    try {
-      const default_processor_result = await Processor.ProcessPayment(payment, "default")
+    const defaultUp = health.default.status === 'UP'
+    const fallbackUp = health.fallback.status === 'UP'
 
-      if (default_processor_result.status === 200 || default_processor_result.status === 201) {
-        processed_by = "default"
-      }
+    // Política: preferir sempre default quando UP; fallback só se default falhar
+    // Se o health-check não conseguir determinar (ambos DOWN), ainda assim tentamos default e depois fallback
+    const tryOrder = (() => {
+      if (defaultUp && fallbackUp) return ["default", "fallback"]
+      if (defaultUp) return ["default"]
+      if (fallbackUp) return ["fallback"]
+      return ["default", "fallback"]
+    })()
 
-    } catch (error) {
-      console.error(`[Worker] Default processor failed. Error: ${error.message}. Trying fallback.`)
-    }
-    
-    if (processed_by == null) {
+    for (const type of tryOrder) {
       try {
-        const fallback_result = await Processor.ProcessPayment(payment, "fallback")
-
-        if (fallback_result.status === 200 || fallback_result.status === 201) {
-          processed_by = "fallback"
-        } else {
-          throw new Error(`Fallback processor returned status ${fallback_result.status}`)
+        const result = await Processor.ProcessPayment(payment, type)
+        if (result.status === 200 || result.status === 201) {
+          processed_by = type
+          break
         }
       } catch (error) {
-        throw new Error(`Both processors failed. Last error: ${error.message}`)
+        console.error(`[Worker] ${type} processor failed. Error: ${error.message}.`)
       }
+    }
+
+    if (processed_by == null) {
+      throw new Error("All processors attempts failed")
     }
 
     const key = processed_by === "default"
@@ -62,43 +65,61 @@ export default async function processor (job) {
 async function ProcessorsHealthCheck() {
 
   const FIVE_SECONDS_IN_MS = 5000
+  const now = Date.now()
 
-  const default_last_check_time = parseInt(await redis.get(process.env.DEFAULT_HEALTH_CHECK_TIMESTAMP_KEY)) || 0
-  const fallback_last_check_time = parseInt(await redis.get(process.env.FALLBACK_HEALTH_CHECK_TIMESTAMP_KEY)) || 0
+  async function refreshIfNeeded(type) {
+    const statusKey = type === 'default'
+      ? (process.env.DEFAULT_HEALTH_CHECK_KEY || 'HEALTH:DEFAULT:STATUS')
+      : (process.env.FALLBACK_HEALTH_CHECK_KEY || 'HEALTH:FALLBACK:STATUS')
+    const tsKey = type === 'default'
+      ? (process.env.DEFAULT_HEALTH_CHECK_TIMESTAMP_KEY || 'HEALTH:DEFAULT:TS')
+      : (process.env.FALLBACK_HEALTH_CHECK_TIMESTAMP_KEY || 'HEALTH:FALLBACK:TS')
+    const rtKey = `${statusKey}:minRT`
+    const lockKey = `HEALTH_LOCK:${type}`
 
-  const default_status = await redis.get(process.env.DEFAULT_HEALTH_CHECK_KEY)
-  const fallback_status = await redis.get(process.env.FALLBACK_HEALTH_CHECK_KEY)
+    const [status, lastTs] = await Promise.all([
+      redis.get(statusKey),
+      redis.get(tsKey)
+    ])
 
-  if (default_status === null || fallback_status === null) {
+    const lastCheck = parseInt(lastTs || '0')
+    const isStale = !lastCheck || (now - lastCheck) > FIVE_SECONDS_IN_MS
 
-    let default_health = await Processor.ProcessorHealthCheck("default") 
-    let fallback_health = await Processor.ProcessorHealthCheck("fallback")
-
-    await redis.set(process.env.DEFAULT_HEALTH_CHECK_KEY, default_health.failing ? "DOWN" : "UP", "EX", 60)
-    await redis.set(process.env.FALLBACK_HEALTH_CHECK_KEY, fallback_health.failing ? "DOWN" : "UP", "EX", 60)
-
-      if (default_health.failing && fallback_health.failing) {
-        // Se ambos os processadores falharem, não podemos continuar, joganado o job para a retentativa
-        throw new Error("Both processors are down")
+    if (isStale) {
+      const acquired = await redis.set(lockKey, String(now), 'NX', 'EX', 5)
+      if (acquired) {
+        const health = await Processor.ProcessorHealthCheck(type)
+        const isUp = !health.failing
+        await Promise.all([
+          redis.set(statusKey, isUp ? 'UP' : 'DOWN', 'EX', 15),
+          redis.set(tsKey, String(Date.now()), 'EX', 20),
+          redis.set(rtKey, String(health.minResponseTime ?? ''), 'EX', 15)
+        ])
+        return { status: isUp ? 'UP' : 'DOWN', minResponseTime: health.minResponseTime }
+      } else {
+        // Outro worker está atualizando. Tente ler com pequeno atraso para evitar estado inconsistente
+        const lockExists = await redis.get(lockKey)
+        if (lockExists) {
+          await new Promise(res => setTimeout(res, 200))
+        }
       }
-      
-  } else {
-
-    const current_time = Date.now()
-
-    if (default_status === "UP" && (current_time - default_last_check_time) > FIVE_SECONDS_IN_MS) {
-      let default_health = await Processor.ProcessorHealthCheck("default")
-      await redis.set(process.env.DEFAULT_HEALTH_CHECK_KEY, default_health.failing ? "DOWN" : "UP", "EX", 60)
     }
 
-    if (fallback_status === "UP" && (current_time - fallback_last_check_time) > FIVE_SECONDS_IN_MS) {
-      let fallback_health = await Processor.ProcessorHealthCheck("fallback")
-      await redis.set(process.env.FALLBACK_HEALTH_CHECK_KEY, fallback_health.failing ? "DOWN" : "UP", "EX", 60)
-    }
+    const [finalStatus, minRtStr] = await Promise.all([
+      status ? Promise.resolve(status) : redis.get(statusKey),
+      redis.get(rtKey)
+    ])
 
-    if (default_status === "DOWN" && fallback_status === "DOWN") {
-      throw new Error("Both processors are down")
+    return {
+      status: finalStatus || 'DOWN',
+      minResponseTime: minRtStr ? parseInt(minRtStr) : undefined,
     }
-
   }
+
+  const [defaultHealth, fallbackHealth] = await Promise.all([
+    refreshIfNeeded('default'),
+    refreshIfNeeded('fallback')
+  ])
+
+  return { default: defaultHealth, fallback: fallbackHealth }
 }
